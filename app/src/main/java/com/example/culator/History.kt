@@ -8,13 +8,13 @@ internal const val HISTORY_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
 
 internal data class HistoryEntry(val equation: String, val result: String, val timestamp: Long)
 
-internal fun recentHistory(entries: List<HistoryEntry>, now: Long): List<HistoryEntry> =
-    entries.filter { it.timestamp >= now - HISTORY_RETENTION_MS }.sortedByDescending { it.timestamp }
+internal fun recentHistory(entries: List<HistoryEntry>, now: Long, retentionMs: Long = HISTORY_RETENTION_MS): List<HistoryEntry> =
+    entries.filter { it.timestamp >= now - retentionMs }.sortedByDescending { it.timestamp }
 
 internal fun confirmedEntry(equation: String, now: Long): HistoryEntry? =
     evaluate(equation)?.let { HistoryEntry(equation, it.display(), now) }
 
-internal class HistoryStore(context: Context) {
+internal class HistoryStore(context: Context, private val retentionMs: Long = HISTORY_RETENTION_MS) {
     private val preferences = context.applicationContext.getSharedPreferences("calculator_history", Context.MODE_PRIVATE)
 
     fun load(now: Long = System.currentTimeMillis()): List<HistoryEntry> {
@@ -25,7 +25,7 @@ internal class HistoryStore(context: Context) {
                 HistoryEntry(entry.getString("equation"), entry.getString("result"), entry.getLong("timestamp"))
             }.getOrNull()
         }
-        val recent = recentHistory(saved, now)
+        val recent = recentHistory(saved, now, retentionMs)
         if (recent != saved) save(recent)
         return recent
     }

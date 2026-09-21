@@ -1,6 +1,7 @@
 package com.example.culator
 
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -11,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -24,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.delay
@@ -47,12 +50,19 @@ class MainActivity : ComponentActivity() {
         setContent {
             val store = remember { SettingsStore(this) }
             var settings by remember { mutableStateOf(store.load()) }
+            val systemDarkTheme = isSystemInDarkTheme()
+            val darkTheme = if (settings.followSystemTheme) systemDarkTheme else settings.darkMode
             SideEffect {
-                val barStyle = if (settings.darkMode) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                if (settings.keepScreenOn) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+                val barStyle = if (darkTheme) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
                     else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
                 enableEdgeToEdge(statusBarStyle = barStyle, navigationBarStyle = barStyle)
             }
-            CulatorTheme(darkTheme = settings.darkMode, accent = settings.accent, customAccent = settings.customAccent) {
+            CulatorTheme(darkTheme = darkTheme, accent = settings.accent, customAccent = settings.customAccent) {
                 CalculatorScreen(settings) { settings = it; store.save(it) }
             }
         }
@@ -61,11 +71,13 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun CalculatorScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Unit) {
+    var showMenu by remember { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = showSettings) { showSettings = false }
     val context = LocalContext.current
-    val historyStore = remember(context) { HistoryStore(context) }
-    var history by remember { mutableStateOf(historyStore.load()) }
+    val retentionMs = settings.historyRetentionDays * 24L * 60 * 60 * 1000
+    val historyStore = remember(context, retentionMs) { HistoryStore(context, retentionMs) }
+    var history by remember(historyStore) { mutableStateOf(historyStore.load()) }
     var showHistory by rememberSaveable { mutableStateOf(false) }
     // Remove expired entries on resume and as they expire while the app is open.
     DisposableEffect(context, historyStore) {
@@ -79,7 +91,7 @@ private fun CalculatorScreen(settings: AppSettings, onSettingsChange: (AppSettin
     LaunchedEffect(historyStore, history) {
         val oldest = history.minOfOrNull { it.timestamp }
         if (oldest != null) {
-            delay((oldest + HISTORY_RETENTION_MS + 1 - System.currentTimeMillis()).coerceIn(1L, 60_000L))
+            delay((oldest + retentionMs + 1 - System.currentTimeMillis()).coerceIn(1L, 60_000L))
             history = historyStore.load()
             // Continue checking even when no entries have expired yet.
             while (true) {
@@ -88,8 +100,14 @@ private fun CalculatorScreen(settings: AppSettings, onSettingsChange: (AppSettin
             }
         }
     }
-    var equation by rememberSaveable { mutableStateOf("") }
-    var completed by rememberSaveable { mutableStateOf(false) }
+    val draftPreferences = remember(context) {
+        context.applicationContext.getSharedPreferences("calculator_draft", android.content.Context.MODE_PRIVATE)
+    }
+    var equation by rememberSaveable { mutableStateOf(draftPreferences.getString("equation", "") ?: "") }
+    var completed by rememberSaveable { mutableStateOf(draftPreferences.getBoolean("completed", false)) }
+    SideEffect {
+        draftPreferences.edit().putString("equation", equation).putBoolean("completed", completed).apply()
+    }
     var splitTotal by rememberSaveable { mutableStateOf<String?>(null) }
     var itemCount by rememberSaveable { mutableStateOf("") }
     var results by rememberSaveable { mutableStateOf<List<String>?>(null) }
@@ -110,13 +128,29 @@ private fun CalculatorScreen(settings: AppSettings, onSettingsChange: (AppSettin
         BoxWithConstraints(Modifier.safeDrawingPadding().padding(horizontal = 20.dp, vertical = 12.dp)) {
             val keySize = minOf((maxWidth - 30.dp) / 4, (maxHeight - 200.dp) / 5, 100.dp).coerceAtLeast(40.dp)
             Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = { showSettings = true }) { Text("Settings") }
-                    TextButton(onClick = { history = historyStore.load(); showHistory = true }) { Text("History") }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(painterResource(R.drawable.ic_menu), contentDescription = "Open menu")
+                        }
+                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            DropdownMenuItem(text = { Text("Settings") }, onClick = {
+                                showMenu = false
+                                showSettings = true
+                            })
+                            DropdownMenuItem(text = { Text("History") }, onClick = {
+                                showMenu = false
+                                history = historyStore.load()
+                                showHistory = true
+                            })
+                        }
+                    }
                 }
                 Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.Bottom, horizontalAlignment = Alignment.End) {
                     if (enteringCount) Text("Number of items", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
-                    EquationText(if (enteringCount) itemCount.ifEmpty { "0" } else equation.ifEmpty { "0" })
+                    EquationText(if (enteringCount) itemCount.ifEmpty { "0" } else equation.ifEmpty { "0" },
+                        modifier = Modifier.clickable(enabled = answer != null && !enteringCount,
+                            onClickLabel = "Random average") { startAverage() })
                     Text(if (enteringCount) "press = to confirm" else if (answer != null) "= ${answer.display()}" else "",
                         color = if (answer != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 23.sp, maxLines = 1,
                         modifier = Modifier.padding(top = 8.dp).clickable(enabled = answer != null && !enteringCount) { startAverage() }.horizontalScroll(rememberScrollState()))
@@ -188,7 +222,7 @@ private fun CalculatorScreen(settings: AppSettings, onSettingsChange: (AppSettin
             }
         }
     }
-    if (showHistory) HistoryDialog(history,
+    if (showHistory) HistoryDialog(history, settings.historyRetentionDays,
         onDelete = { history = historyStore.delete(it) },
         onClear = { history = historyStore.clear() },
         onRestore = {
@@ -233,10 +267,10 @@ private fun AverageDialog(total: BigDecimal, results: List<String>, offsetRange:
 }
 
 @Composable
-private fun EquationText(equation: String) {
+private fun EquationText(equation: String, modifier: Modifier = Modifier) {
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
+    BoxWithConstraints(modifier.fillMaxWidth()) {
         val width = with(density) { maxWidth.roundToPx() }
         val style = LocalTextStyle.current
         val size = (44 downTo 24 step 2).firstOrNull { candidate ->
@@ -250,7 +284,7 @@ private fun EquationText(equation: String) {
 
 @Composable
 private fun HistoryDialog(
-    entries: List<HistoryEntry>, onDelete: (HistoryEntry) -> Unit,
+    entries: List<HistoryEntry>, retentionDays: Int, onDelete: (HistoryEntry) -> Unit,
     onClear: () -> Unit, onRestore: (HistoryEntry) -> Unit, onDismiss: () -> Unit
 ) {
     var selectedEntry by remember { mutableStateOf<HistoryEntry?>(null) }
@@ -259,7 +293,7 @@ private fun HistoryDialog(
         Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("History", fontSize = 25.sp, fontWeight = FontWeight.SemiBold)
-                Text("Last 7 days · Hold an equation for actions", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Last $retentionDays ${if (retentionDays == 1) "day" else "days"} · Hold an equation for actions", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (entries.isEmpty()) Text("No saved equations. Press = to save a result.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else LazyColumn(Modifier.weight(1f, fill = false).heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     itemsIndexed(entries) { _, entry ->

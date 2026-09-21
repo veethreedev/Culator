@@ -1,6 +1,7 @@
 package com.example.culator
 
 import android.content.Context
+import android.os.Build
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -8,31 +9,43 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
-internal data class AppSettings(val darkMode: Boolean = true, val accent: String = "Mint", val offsetRange: Int = 20, val customAccent: Int = 0xFFCAEFAC.toInt())
+internal data class AppSettings(val darkMode: Boolean = true, val accent: String = "System", val offsetRange: Int = 20, val customAccent: Int = 0xFFCAEFAC.toInt(), val followSystemTheme: Boolean = true, val keepScreenOn: Boolean = true, val historyRetentionDays: Int = 7)
 
 internal class SettingsStore(context: Context) {
     private val preferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private val defaults = AppSettings()
     fun load() = AppSettings(
-        preferences.getBoolean("darkMode", true),
-        preferences.getString("accent", "Mint")?.takeIf { it in accents } ?: "Mint",
-        preferences.getInt("offsetRange", 20).coerceIn(1, 100),
-        preferences.getInt("customAccent", 0xFFCAEFAC.toInt())
+        preferences.getBoolean("darkMode", defaults.darkMode),
+        preferences.getString("accent", defaults.accent)?.takeIf { it in accents } ?: defaults.accent,
+        preferences.getInt("offsetRange", defaults.offsetRange).coerceIn(1, 100),
+        preferences.getInt("customAccent", defaults.customAccent),
+        preferences.getBoolean("followSystemTheme", defaults.followSystemTheme),
+        preferences.getBoolean("keepScreenOn", defaults.keepScreenOn),
+        preferences.getInt("historyRetentionDays", defaults.historyRetentionDays).takeIf { it in historyRetentionOptions } ?: defaults.historyRetentionDays
     )
     fun save(settings: AppSettings) {
         preferences.edit().putBoolean("darkMode", settings.darkMode)
+            .putBoolean("followSystemTheme", settings.followSystemTheme)
+            .putBoolean("keepScreenOn", settings.keepScreenOn)
+            .putInt("historyRetentionDays", settings.historyRetentionDays)
             .putString("accent", settings.accent).putInt("offsetRange", settings.offsetRange)
             .putInt("customAccent", settings.customAccent).apply()
     }
 }
 
-internal val accents = listOf("Mint", "Blue", "Purple", "Custom")
+internal val historyRetentionOptions = listOf(1, 7, 30, 90, 365)
+
+internal val accents = listOf("Mint", "Blue", "Purple", "System", "Custom")
 
 @Composable
 internal fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onClose: () -> Unit) {
@@ -46,8 +59,12 @@ internal fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Un
             Text("Settings", style = MaterialTheme.typography.headlineMedium)
             Text("Appearance", style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                FilterChip(selected = settings.darkMode, onClick = { onChange(settings.copy(darkMode = true)) }, label = { Text("Dark") })
-                FilterChip(selected = !settings.darkMode, onClick = { onChange(settings.copy(darkMode = false)) }, label = { Text("Light") })
+                FilterChip(selected = !settings.followSystemTheme && settings.darkMode,
+                    onClick = { onChange(settings.copy(darkMode = true, followSystemTheme = false)) }, label = { Text("Dark") })
+                FilterChip(selected = !settings.followSystemTheme && !settings.darkMode,
+                    onClick = { onChange(settings.copy(darkMode = false, followSystemTheme = false)) }, label = { Text("Light") })
+                FilterChip(selected = settings.followSystemTheme,
+                    onClick = { onChange(settings.copy(followSystemTheme = true)) }, label = { Text("System") })
             }
             Text("Accent color", style = MaterialTheme.typography.titleMedium)
             accents.chunked(3).forEach { row ->
@@ -58,6 +75,40 @@ internal fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Un
                     }
                 }
             }
+            if (settings.accent == "System" && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                Text("System accent requires Android 12 or later. Using Mint on this device.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            HorizontalDivider()
+            Row(
+                modifier = Modifier.fillMaxWidth().toggleable(
+                    value = settings.keepScreenOn,
+                    role = Role.Switch,
+                    onValueChange = { onChange(settings.copy(keepScreenOn = it)) }
+                ).padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Keep screen on", style = MaterialTheme.typography.titleMedium)
+                    Text("Prevent the screen from sleeping while using the app.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(checked = settings.keepScreenOn, onCheckedChange = null)
+            }
+            HorizontalDivider()
+            Text("Keep history for", style = MaterialTheme.typography.titleMedium)
+            historyRetentionOptions.chunked(3).forEach { daysRow ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    daysRow.forEach { days ->
+                        FilterChip(selected = settings.historyRetentionDays == days,
+                            onClick = { onChange(settings.copy(historyRetentionDays = days)) },
+                            label = { Text(if (days == 1) "1 day" else "$days days") })
+                    }
+                }
+            }
+            Text("Older entries are deleted. Increasing this period won't restore deleted history.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider()
             Text("Random average offsets", style = MaterialTheme.typography.titleMedium)
             Text("Up to ±${settings.offsetRange}")
@@ -65,6 +116,9 @@ internal fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Un
                 valueRange = 1f..100f, steps = 98)
             Text("Each whole-number result stays within this distance of the average. The total stays exact.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedButton(onClick = { onChange(AppSettings()) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Restore defaults")
+            }
             Button(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Done") }
         }
     }
