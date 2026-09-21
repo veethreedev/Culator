@@ -4,13 +4,13 @@ plugins {
 }
 
 android {
-    namespace = "com.example.culator"
+    namespace = "com.veethreedev.culator"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "com.example.culator"
+        applicationId = "com.veethreedev.culator"
         minSdk = 24
         targetSdk = 37
         versionCode = 1

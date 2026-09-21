@@ -4,7 +4,7 @@
     "type": "APK",
     "kind": "Directory"
   },
-  "applicationId": "com.example.culator",
+  "applicationId": "com.veethreedev.culator",
   "variantName": "release",
   "elements": [
     {
